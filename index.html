@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enhanced Three.js Cube Transitions</title>
+    <!-- Three.js and required dependencies -->
+    <script src="https://unpkg.com/three@0.134.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.134.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://unpkg.com/three@0.134.0/examples/js/loaders/FontLoader.js"></script>
+    <script src="https://unpkg.com/three@0.134.0/examples/js/geometries/TextGeometry.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+        }
+
+        body {
+            background: #000;
+            height: 500vh;
+            overflow-x: hidden;
+        }
+
+        #scene-container {
+            position: fixed;
+            width: 100%;
+            height: 100vh;
+        }
+
+        .loading-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 24px;
+            z-index: 1000;
+            transition: opacity 0.5s ease-out;
+        }
+
+        .error-message {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 0, 0, 0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 5px;
+            display: none;
+            z-index: 1001;
+        }
+    </style>
+</head>
+<body>
+    <div id="scene-container"></div>
+    <div class="loading-screen">Loading...</div>
+    <div class="error-message"></div>
+    <script>
+        class EnhancedCube {
+            constructor() {
+                // Core Three.js components
+                this.container = document.getElementById('scene-container');
+                this.scene = new THREE.Scene();
+                this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                this.renderer = new THREE.WebGLRenderer({ 
+                    antialias: true,
+                    alpha: true
+                });
+                this.clock = new THREE.Clock();
+                this.controls = null;
+        
+                // State management
+                this.state = {
+                    isInitial: true,
+                    isScrolling: false,
+                    isFreeRotating: false,
+                    inPortfolioMode: false,
+                    currentStep: 0,
+                    hasScrolled: false
+                };
+        
+                // Camera Zoom
+                this.defaultCameraPosition = { x: 0, y: 0.5, z: 5 };
+                this.zoomedCameraPosition = { x: 0, y: 0.5, z: 2.5 }; // 50% zoom in
+                this.unlockedCameraPosition = { x: 0, y: 0.5, z: 7.5 }; // 50% zoom out
+                this.cameraTargetPosition = { ...this.defaultCameraPosition };
+        
+                // Animation properties
+                this.cube = null;
+                this.textMeshes = [];
+                this.targetRotation = { x: 0, y: 0, z: 0 };
+                this.currentRotation = { x: 0, y: 0, z: 0 };
+                this.momentum = { x: 0, y: 0 };
+                this.mousePosition = { x: 0, y: 0 };
+                this.isDragging = false;
+                this.lastMousePosition = { x: 0, y: 0 };
+        
+                // Constants
+                this.FRICTION = 0.95;
+                this.MOMENTUM_THRESHOLD = 0.001;
+                this.FLOAT_SPEED = 3;
+                this.FLOAT_HEIGHT = 0.2;
+
+                // Rotation sequence for portfolio mode
+                this.rotationSequence = [
+                    { x: 0, y: 0, z: 0 }, // Front
+                    { x: 0, y: -Math.PI / 2, z: 0 }, // Right
+                    { x: Math.PI / 2, y: -Math.PI / 2, z: 0 }, // Bottom
+                    { x: 0, y: -Math.PI, z: 0 }, // Back
+                    { x: 0, y: Math.PI / 2, z: 0 }, // Left
+                    { x: -Math.PI / 2, y: Math.PI / 2, z: 0 }, // Top
+                    { x: 0, y: 0, z: 0 } // Front again
+                ];
+            }
+        
+            async init() {
+                try {
+                    this.setupRenderer();
+                    this.setupCamera();
+                    this.setupControls();
+                    this.setupLights();
+                    await this.createCube();
+                    this.setupEventListeners();
+                    this.animate();
+                    this.hideLoadingScreen();
+                } catch (error) {
+                    this.showError('Failed to initialize 3D scene: ' + error.message);
+                }
+            }
+        
+            setupRenderer() {
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                this.renderer.shadowMap.enabled = true;
+                this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                this.container.appendChild(this.renderer.domElement);
+            }
+        
+            setupCamera() {
+                this.camera.position.set(this.defaultCameraPosition.x, this.defaultCameraPosition.y, this.defaultCameraPosition.z);
+                this.camera.lookAt(0, 0, 0);
+            }
+        
+            setupControls() {
+                if (typeof THREE.OrbitControls === 'undefined') {
+                    console.warn('OrbitControls not loaded, skipping controls setup');
+                    return;
+                }
+                this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
+                this.controls.enableDamping = true;
+                this.controls.enabled = false; // Initially disabled
+            }
+        
+            setupLights() {
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+                this.scene.add(ambientLight);
+        
+                const mainLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                mainLight.position.set(5, 5, 5);
+                mainLight.castShadow = true;
+                mainLight.shadow.mapSize.width = 2048;
+                mainLight.shadow.mapSize.height = 2048;
+                this.scene.add(mainLight);
+        
+                const fillLight = new THREE.DirectionalLight(0xffffff, 0.3);
+                fillLight.position.set(-5, -5, -5);
+                this.scene.add(fillLight);
+            }
+        
+            async createCube() {
+                try {
+                    const materials = [];
+                    const faceColors = [
+                        0x2196F3, 0xF44336, 0x4CAF50,
+                        0xFF9800, 0x9C27B0, 0xFFEB3B
+                    ];
+        
+                    faceColors.forEach(color => {
+                        materials.push(new THREE.MeshPhongMaterial({
+                            color: color,
+                            transparent: true,
+                            opacity: 0.9,
+                            shininess: 30,
+                            specular: 0x444444
+                        }));
+                    });
+        
+                    const geometry = new THREE.BoxGeometry(2, 2, 2, 1, 1, 1);
+                    this.cube = new THREE.Mesh(geometry, materials);
+                    this.cube.castShadow = true;
+                    this.cube.receiveShadow = true;
+                    this.scene.add(this.cube);
+        
+                    await this.addTextToFaces();
+                } catch (error) {
+                    throw new Error('Failed to create cube: ' + error.message);
+                }
+            }
+
+            async addTextToFaces() {
+                const loader = new THREE.FontLoader();
+                
+                return new Promise((resolve, reject) => {
+                    loader.load(
+                        'https://unpkg.com/three@0.134.0/examples/fonts/helvetiker_regular.typeface.json',
+                        (font) => {
+                            const textMaterial = new THREE.MeshPhongMaterial({ color: 0xffffff });
+                            const faces = ['Front', 'Back', 'Right', 'Left', 'Top', 'Bottom'];
+                            const positions = [
+                                [0, 0, 1.01], [0, 0, -1.01],
+                                [1.01, 0, 0], [-1.01, 0, 0],
+                                [0, 1.01, 0], [0, -1.01, 0]
+                            ];
+
+                            faces.forEach((text, index) => {
+                                const textGeometry = new THREE.TextGeometry(text, {
+                                    font: font,
+                                    size: 0.2,
+                                    height: 0.05
+                                });
+
+                                textGeometry.computeBoundingBox();
+                                const centerOffset = new THREE.Vector3();
+                                textGeometry.boundingBox.getCenter(centerOffset).multiplyScalar(-1);
+
+                                const textMesh = new THREE.Mesh(textGeometry, textMaterial);
+                                textMesh.position.set(...positions[index]);
+                                textMesh.position.add(centerOffset);
+
+                                if (index === 4) textMesh.rotation.x = -Math.PI / 2;
+                                if (index === 5) textMesh.rotation.x = Math.PI / 2;
+                                if (index === 2) textMesh.rotation.y = Math.PI / 2;
+                                if (index === 3) textMesh.rotation.y = -Math.PI / 2;
+                                if (index === 1) textMesh.rotation.y = Math.PI;
+
+                                this.textMeshes.push(textMesh);
+                                this.cube.add(textMesh);
+                            });
+                            resolve();
+                        },
+                        undefined,
+                        () => reject(new Error('Failed to load font'))
+                    );
+                });
+            }
+
+            setupEventListeners() {
+                document.addEventListener('mousedown', (e) => this.onMouseDown(e));
+                document.addEventListener('mousemove', (e) => this.onMouseMove(e));
+                document.addEventListener('mouseup', () => this.onMouseUp());
+                document.addEventListener('mouseleave', () => this.onMouseLeave());
+                window.addEventListener('scroll', () => this.onScroll());
+                window.addEventListener('resize', () => this.onWindowResize());
+            }
+
+            onMouseDown(event) {
+                if (this.state.isFreeRotating) {
+                    this.isDragging = true;
+                    this.lastMousePosition.x = event.clientX;
+                    this.lastMousePosition.y = event.clientY;
+                    this.momentum = { x: 0, y: 0 };
+                }
+            }
+
+            onMouseMove(event) {
+                if (this.state.isFreeRotating && this.isDragging) {
+                    const deltaX = event.clientX - this.lastMousePosition.x;
+                    const deltaY = event.clientY - this.lastMousePosition.y;
+
+                    this.momentum.x = deltaX * 0.01;
+                    this.momentum.y = deltaY * 0.01;
+
+                    this.targetRotation.y += this.momentum.x;
+                    this.targetRotation.x -= this.momentum.y;
+
+                    this.lastMousePosition.x = event.clientX;
+                    this.lastMousePosition.y = event.clientY;
+                } else if (this.state.isInitial) {
+                    const rect = this.container.getBoundingClientRect();
+                    const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+                    const y = ((event.clientY - rect.top) / rect.height) * 2 - 1; // Corrected Y calculation
+
+                    this.targetRotation.y = x * 0.3;
+                    this.targetRotation.x = -y * 0.3; // Invert Y-axis for correct rotation
+                }
+            }
+
+            onMouseUp() {
+                this.isDragging = false;
+            }
+
+            onMouseLeave() {
+                this.isDragging = false;
+            }
+
+            onScroll() {
+                const scrollTop = window.scrollY;
+                const scrollHeight = document.documentElement.scrollHeight - window.innerHeight;
+                const scrollPercent = scrollTop / scrollHeight;
+
+                if (scrollTop === 0) {
+                    // Reset to initial state when scrolled to the top
+                    this.state.isInitial = true;
+                    this.state.inPortfolioMode = false;
+                    this.state.isFreeRotating = false;
+                    this.state.hasScrolled = false;
+                    this.cameraTargetPosition = { ...this.defaultCameraPosition };
+                    this.targetRotation = { x: 0, y: 0, z: 0 };
+                } else {
+                    if (!this.state.hasScrolled) {
+                        this.state.hasScrolled = true;
+                        this.state.isInitial = false;
+                    }
+
+                    if (scrollPercent > 0 && !this.state.inPortfolioMode) {
+                        this.state.inPortfolioMode = true; // Enter portfolio mode immediately on any scroll
+                        this.cameraTargetPosition = { ...this.zoomedCameraPosition }; // Zoom in 50%
+                        this.cube.position.y = 0; // Reset position to stop floating
+                    }
+
+                    if (this.state.inPortfolioMode) {
+                        // Handle portfolio mode rotation
+                        const sequenceIndex = Math.floor(scrollPercent * this.rotationSequence.length);
+                        if (sequenceIndex < this.rotationSequence.length) {
+                            this.targetRotation = { ...this.rotationSequence[sequenceIndex] };
+                        } else {
+                            // End of portfolio mode, zoom out to free movement
+                            this.state.inPortfolioMode = false;
+                            this.cameraTargetPosition = { ...this.unlockedCameraPosition }; // Zoom out 50%
+                            this.state.isFreeRotating = true;
+                        }
+                    } else if (scrollPercent <= 1) {
+                        // Initial zoom to the cube's face
+                        const zoomFactor = this.defaultCameraPosition.z - this.zoomedCameraPosition.z;
+                        this.cameraTargetPosition.z = this.defaultCameraPosition.z - (zoomFactor * scrollPercent);
+                    } else {
+                        // Zoom out beyond the original position
+                        const unlockFactor = this.unlockedCameraPosition.z - this.defaultCameraPosition.z;
+                        this.cameraTargetPosition.z = this.defaultCameraPosition.z + (unlockFactor * (scrollPercent - 1));
+                        this.state.isFreeRotating = true;
+                    }
+                }
+            }
+
+            onWindowResize() {
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+
+            hideLoadingScreen() {
+                const loadingScreen = document.querySelector('.loading-screen');
+                loadingScreen.style.opacity = '0';
+                setTimeout(() => {
+                    loadingScreen.style.display = 'none';
+                }, 500);
+            }
+
+            showError(message) {
+                const errorElement = document.querySelector('.error-message');
+                errorElement.textContent = message;
+                errorElement.style.display = 'block';
+            }
+
+            updateRotation() {
+                this.currentRotation.x += (this.targetRotation.x - this.currentRotation.x) * 0.1; // Adjusted speed
+                this.currentRotation.y += (this.targetRotation.y - this.currentRotation.y) * 0.1;
+                this.currentRotation.z += (this.targetRotation.z - this.currentRotation.z) * 0.1;
+
+                if (this.state.isFreeRotating && !this.isDragging) {
+                    this.momentum.x *= this.FRICTION;
+                    this.momentum.y *= this.FRICTION;
+
+                    if (Math.abs(this.momentum.x) > this.MOMENTUM_THRESHOLD) {
+                        this.targetRotation.y += this.momentum.x;
+                    }
+                    if (Math.abs(this.momentum.y) > this.MOMENTUM_THRESHOLD) {
+                        this.targetRotation.x -= this.momentum.y;
+                    }
+                }
+
+                this.cube.rotation.x = this.currentRotation.x;
+                this.cube.rotation.y = this.currentRotation.y;
+                this.cube.rotation.z = this.currentRotation.z;
+            }
+
+            updateCameraPosition() {
+                const zoomSpeed = 0.1; // Adjust this value for faster zoom
+                this.camera.position.x += (this.cameraTargetPosition.x - this.camera.position.x) * zoomSpeed;
+                this.camera.position.y += (this.cameraTargetPosition.y - this.camera.position.y) * zoomSpeed;
+                this.camera.position.z += (this.cameraTargetPosition.z - this.camera.position.z) * zoomSpeed;
+            }
+
+            dispose() {
+                this.cube.geometry.dispose();
+                this.cube.material.forEach(material => material.dispose());
+                this.textMeshes.forEach(mesh => {
+                    mesh.geometry.dispose();
+                    mesh.material.dispose();
+                });
+                if (this.controls) {
+                    this.controls.dispose();
+                }
+                this.renderer.dispose();
+                
+                window.removeEventListener('resize', this.onWindowResize.bind(this));
+                document.removeEventListener('mousedown', this.onMouseDown.bind(this));
+                document.removeEventListener('mousemove', this.onMouseMove.bind(this));
+                document.removeEventListener('mouseup', this.onMouseUp.bind(this));
+                document.removeEventListener('mouseleave', this.onMouseLeave.bind(this));
+                window.removeEventListener('scroll', this.onScroll.bind(this));
+            }
+
+            animate() {
+                requestAnimationFrame(() => this.animate());
+
+                const elapsedTime = this.clock.getElapsedTime();
+
+                // Apply floating effect only in initial and free control modes
+                if ((this.state.isInitial || this.state.isFreeRotating) && !this.state.inPortfolioMode) {
+                    this.cube.position.y = Math.sin(elapsedTime * this.FLOAT_SPEED) * this.FLOAT_HEIGHT;
+                }
+
+                if (this.controls && this.controls.enabled) {
+                    this.controls.update();
+                } else {
+                    this.updateRotation();
+                    this.updateCameraPosition();
+                }
+
+                this.renderer.render(this.scene, this.camera);
+            }
+        }
+
+        // Initialize the application
+        const app = new EnhancedCube();
+        app.init().catch(error => {
+            console.error('Application failed to initialize:', error);
+            app.showError('Failed to initialize application. Please refresh the page.');
+        });
+
+        // Clean up on window unload
+        window.addEventListener('unload', () => {
+            app.dispose();
+        });
+    </script>
+</body>
+</html>
